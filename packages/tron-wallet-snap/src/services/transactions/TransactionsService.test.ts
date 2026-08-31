@@ -1,0 +1,1453 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion */
+import type { Transaction } from '@metamask/keyring-api';
+import { TransactionStatus, TransactionType } from '@metamask/keyring-api';
+import type { Logger } from '@metamask/snap-networks-utils';
+
+import type { PriceApiClient } from '../../clients/price-api/PriceApiClient';
+import type { SnapClient } from '../../clients/snap/SnapClient';
+import type { TronHttpClient } from '../../clients/tron-http/TronHttpClient';
+import type { TrongridApiClient } from '../../clients/trongrid/TrongridApiClient';
+import type {
+  ContractTransactionInfo,
+  TransactionInfo,
+} from '../../clients/trongrid/types';
+import { KnownCaip19Id, Network, Networks } from '../../constants';
+import type { TronKeyringAccount } from '../../entities/keyring-account';
+import { mockLogger } from '../../utils/mockLogger';
+import nativeTransferMock from './mocks/trongrid/account-transactions/native-transfer.json';
+import trc10TransferMock from './mocks/trongrid/account-transactions/trc10-transfer.json';
+import trc20TransferMock from './mocks/trongrid/account-transactions/trc20-transfer.json';
+import contractInfoMock from './mocks/trongrid/account-trc20-transactions/contract-info.json';
+import { TransactionMapper } from './TransactionsMapper';
+import type { TransactionsRepository } from './TransactionsRepository';
+import { TransactionsService } from './TransactionsService';
+
+type WithTransactionServiceCallback<ReturnValue> = (payload: {
+  transactionsService: TransactionsService;
+  mockLogger: Logger;
+  mockTransactionsRepository: jest.Mocked<
+    Pick<
+      TransactionsRepository,
+      | 'getAll'
+      | 'findByAccountId'
+      | 'getTransactionIdsByAccountId'
+      | 'getConfirmedTransactionIds'
+      | 'save'
+      | 'saveMany'
+    >
+  >;
+  mockTrongridApiClient: jest.Mocked<
+    Pick<
+      TrongridApiClient,
+      | 'getAccountInfoByAddress'
+      | 'getTransactionInfoByAddress'
+      | 'getContractTransactionInfoByAddress'
+    >
+  >;
+  mockTronHttpClient: jest.Mocked<
+    Pick<TronHttpClient, 'getTRC10TokenMetadata' | 'getTransactionInfoById'>
+  >;
+  mockPriceApiClient: jest.Mocked<
+    Pick<PriceApiClient, 'getMultipleSpotPrices'>
+  >;
+  mockSnapClient: jest.Mocked<Pick<SnapClient, 'trackError'>>;
+}) => Promise<ReturnValue> | ReturnValue;
+
+/**
+ * Wraps tests by creating a fresh TransactionsService and fresh mocks.
+ *
+ * @param testFunction - The test body receiving the handler and relevant mocks.
+ * @returns The return value of the callback.
+ */
+async function withTransactionService<ReturnValue>(
+  testFunction: WithTransactionServiceCallback<ReturnValue>,
+): Promise<ReturnValue> {
+  // Mock the global snap object
+  Object.defineProperty(globalThis, 'snap', {
+    value: { request: jest.fn() },
+    writable: true,
+    configurable: true,
+  });
+
+  const mockTransactionsRepository: jest.Mocked<
+    Pick<
+      TransactionsRepository,
+      | 'getAll'
+      | 'findByAccountId'
+      | 'getTransactionIdsByAccountId'
+      | 'getConfirmedTransactionIds'
+      | 'save'
+      | 'saveMany'
+    >
+  > = {
+    getAll: jest.fn(),
+    findByAccountId: jest.fn().mockResolvedValue([]),
+    getTransactionIdsByAccountId: jest.fn().mockResolvedValue(new Set()),
+    getConfirmedTransactionIds: jest.fn().mockResolvedValue(new Set()),
+    save: jest.fn(),
+    saveMany: jest.fn(),
+  };
+
+  const mockTrongridApiClient: jest.Mocked<
+    Pick<
+      TrongridApiClient,
+      | 'getAccountInfoByAddress'
+      | 'getTransactionInfoByAddress'
+      | 'getContractTransactionInfoByAddress'
+    >
+  > = {
+    getAccountInfoByAddress: jest.fn(),
+    getTransactionInfoByAddress: jest.fn(),
+    getContractTransactionInfoByAddress: jest.fn(),
+  };
+
+  const mockTronHttpClient: jest.Mocked<
+    Pick<TronHttpClient, 'getTRC10TokenMetadata' | 'getTransactionInfoById'>
+  > = {
+    getTRC10TokenMetadata: jest.fn(),
+    getTransactionInfoById: jest.fn(),
+  };
+
+  const mockPriceApiClient: jest.Mocked<
+    Pick<PriceApiClient, 'getMultipleSpotPrices'>
+  > = {
+    getMultipleSpotPrices: jest.fn().mockResolvedValue({}),
+  };
+
+  const mockSnapClient: jest.Mocked<Pick<SnapClient, 'trackError'>> = {
+    trackError: jest.fn(),
+  };
+
+  const transactionsService: TransactionsService = new TransactionsService({
+    logger: mockLogger,
+    transactionsRepository:
+      mockTransactionsRepository as unknown as TransactionsRepository,
+    trongridApiClient: mockTrongridApiClient as unknown as TrongridApiClient,
+    tronHttpClient: mockTronHttpClient as unknown as TronHttpClient,
+    priceApiClient: mockPriceApiClient as unknown as PriceApiClient,
+    snapClient: mockSnapClient as unknown as SnapClient,
+  });
+
+  return await testFunction({
+    transactionsService,
+    mockLogger,
+    mockTransactionsRepository,
+    mockTrongridApiClient,
+    mockTronHttpClient,
+    mockPriceApiClient,
+    mockSnapClient,
+  });
+}
+
+// Import simplified mock data (each file now contains only one transaction)
+
+describe('TransactionsService', () => {
+  const mockAccount: TronKeyringAccount = {
+    id: 'test-account-id',
+    address: 'TGJn1wnUYHJbvN88cynZbsAz2EMeZq73yx',
+    type: 'eip155:eoa',
+    options: {},
+    methods: [],
+    scopes: ['tron:728126428'],
+    entropySource: 'test-entropy',
+    derivationPath: 'm/0/0',
+    index: 0,
+  };
+
+  const mockAccount2: TronKeyringAccount = {
+    id: 'test-account-id-2',
+    address: 'TFDP1vFeSYPT6FUznL7zUjhg5X7p2AA8vw',
+    type: 'eip155:eoa',
+    options: {},
+    methods: [],
+    scopes: ['tron:728126428'],
+    entropySource: 'test-entropy',
+    derivationPath: 'm/0/1',
+    index: 1,
+  };
+
+  describe('checkAddressActivity', () => {
+    it('returns true when the address has at least one transaction', async () => {
+      await withTransactionService(
+        async ({ mockTrongridApiClient, transactionsService }) => {
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue([
+            nativeTransferMock,
+          ] as TransactionInfo[]);
+
+          const result = await transactionsService.checkAddressActivity(
+            Network.Mainnet,
+            mockAccount.address,
+          );
+
+          expect(result).toBe(true);
+          expect(
+            mockTrongridApiClient.getTransactionInfoByAddress,
+          ).toHaveBeenCalledWith(Network.Mainnet, mockAccount.address, {
+            limit: 1,
+          });
+        },
+      );
+    });
+
+    it('returns false when the address has no transactions', async () => {
+      await withTransactionService(
+        async ({ mockTrongridApiClient, transactionsService }) => {
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+
+          const result = await transactionsService.checkAddressActivity(
+            Network.Mainnet,
+            mockAccount.address,
+          );
+
+          expect(result).toBe(false);
+        },
+      );
+    });
+
+    it('propagates errors from the API client', async () => {
+      await withTransactionService(
+        async ({ mockTrongridApiClient, transactionsService }) => {
+          const error = new Error('API failure');
+          mockTrongridApiClient.getTransactionInfoByAddress.mockRejectedValue(
+            error,
+          );
+
+          await expect(
+            transactionsService.checkAddressActivity(
+              Network.Mainnet,
+              mockAccount.address,
+            ),
+          ).rejects.toThrow('API failure');
+        },
+      );
+    });
+  });
+
+  describe('fetchNewTransactionsForAccount', () => {
+    it('returns mapped transactions with spam removed', async () => {
+      await withTransactionService(
+        async ({ mockTrongridApiClient, transactionsService }) => {
+          const nativeAsset = (
+            amount: string,
+          ): Transaction['to'][number]['asset'] => ({
+            type: Networks[Network.Mainnet].nativeToken.id,
+            amount,
+            unit: Networks[Network.Mainnet].nativeToken.symbol,
+            fungible: true,
+          });
+
+          const spamTransaction: Transaction = {
+            id: 'spam-tx-id',
+            type: TransactionType.Receive,
+            account: mockAccount.id,
+            chain: Network.Mainnet,
+            status: TransactionStatus.Confirmed,
+            timestamp: 1,
+            from: [{ address: 'sender-address', asset: nativeAsset('0.0005') }],
+            to: [
+              { address: mockAccount.address, asset: nativeAsset('0.0005') },
+            ],
+            events: [],
+            fees: [],
+          };
+
+          const keptTransaction: Transaction = {
+            ...spamTransaction,
+            id: 'kept-tx-id',
+            to: [{ address: mockAccount.address, asset: nativeAsset('0.001') }],
+          };
+
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue([
+            {
+              ...nativeTransferMock,
+              txID: 'spam-raw-tx-id',
+            },
+            {
+              ...nativeTransferMock,
+              txID: 'kept-raw-tx-id',
+            },
+          ] as TransactionInfo[]);
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+
+          const mapTransactionsSpy = jest
+            .spyOn(TransactionMapper, 'mapTransactions')
+            .mockReturnValue([spamTransaction, keptTransaction]);
+
+          try {
+            const result =
+              await transactionsService.fetchNewTransactionsForAccount(
+                Network.Mainnet,
+                mockAccount,
+              );
+
+            expect(mapTransactionsSpy).toHaveBeenCalledWith(
+              expect.objectContaining({
+                scope: Network.Mainnet,
+                account: mockAccount,
+                trc20Transactions: [],
+              }),
+            );
+            expect(result).toStrictEqual([keptTransaction]);
+          } finally {
+            mapTransactionsSpy.mockRestore();
+          }
+        },
+      );
+    });
+
+    it('should fetch and map transactions for an account using native transfers mock data', async () => {
+      await withTransactionService(
+        async ({ mockTrongridApiClient, transactionsService }) => {
+          // Setup mock responses with simplified single-transaction structure
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue([
+            nativeTransferMock,
+          ] as TransactionInfo[]);
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+            contractInfoMock.data as ContractTransactionInfo[],
+          );
+
+          await transactionsService.fetchNewTransactionsForAccount(
+            Network.Mainnet,
+            mockAccount,
+          );
+
+          // Verify API calls were made
+          expect(
+            mockTrongridApiClient.getTransactionInfoByAddress,
+          ).toHaveBeenCalledWith(Network.Mainnet, mockAccount.address);
+          expect(
+            mockTrongridApiClient.getContractTransactionInfoByAddress,
+          ).toHaveBeenCalledWith(Network.Mainnet, mockAccount.address);
+
+          // Verify logger calls
+          expect(mockLogger.info).toHaveBeenCalledWith(
+            '[🧾 TransactionsService]',
+            expect.stringContaining('Fetching new transactions for account'),
+          );
+        },
+      );
+    });
+
+    it('fetches and maps TRC10 transactions with token metadata', async () => {
+      await withTransactionService(
+        async ({
+          mockTrongridApiClient,
+          mockTronHttpClient,
+          mockPriceApiClient,
+          transactionsService,
+        }) => {
+          // Setup mock responses with simplified single-transaction structure
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue([
+            trc10TransferMock,
+          ] as TransactionInfo[]);
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+          // Mock TRC10 token metadata response with 3 decimals
+          mockTronHttpClient.getTRC10TokenMetadata.mockResolvedValue({
+            name: 'BestAdsCoin',
+            symbol: 'TRC20AdsCOM',
+            decimals: 3,
+          });
+          // Token has price data — should not be filtered as spam
+          mockPriceApiClient.getMultipleSpotPrices.mockResolvedValue({
+            [`${Network.Mainnet}/trc10:1005119`]: {
+              id: '1005119',
+              price: 0.001,
+            },
+          } as never);
+
+          const transactions =
+            await transactionsService.fetchNewTransactionsForAccount(
+              Network.Mainnet,
+              mockAccount2,
+            );
+
+          // Verify API calls were made
+          expect(
+            mockTrongridApiClient.getTransactionInfoByAddress,
+          ).toHaveBeenCalledWith(Network.Mainnet, mockAccount2.address);
+          expect(
+            mockTrongridApiClient.getContractTransactionInfoByAddress,
+          ).toHaveBeenCalledWith(Network.Mainnet, mockAccount2.address);
+
+          // Verify TRC10 token metadata was fetched for the token ID in the transaction
+          expect(mockTronHttpClient.getTRC10TokenMetadata).toHaveBeenCalledWith(
+            '1005119',
+            Network.Mainnet,
+          );
+
+          // Verify the amount and symbol are from fetched metadata
+          // Raw amount is 88888888, with 3 decimals: 88888888 / 10^3 = 88888.888
+          expect(transactions).toHaveLength(1);
+          const fromAsset = transactions[0]!.from[0]!.asset as {
+            amount: string;
+            unit: string;
+          };
+          const toAsset = transactions[0]!.to[0]!.asset as {
+            amount: string;
+            unit: string;
+          };
+          expect(fromAsset.amount).toBe('88888.888');
+          expect(fromAsset.unit).toBe('TRC20AdsCOM');
+          expect(toAsset.amount).toBe('88888.888');
+          expect(toAsset.unit).toBe('TRC20AdsCOM');
+        },
+      );
+    });
+
+    it('handles decimal TRC10 asset_name values without throwing', async () => {
+      await withTransactionService(
+        async ({
+          mockTrongridApiClient,
+          mockTronHttpClient,
+          mockPriceApiClient,
+          transactionsService,
+        }) => {
+          const trc10TransferWithDecimalTokenId = JSON.parse(
+            JSON.stringify(trc10TransferMock),
+          ) as TransactionInfo;
+
+          const transferAssetContract = trc10TransferWithDecimalTokenId.raw_data
+            .contract[0] as unknown as {
+            parameter: { value: Record<string, unknown> };
+          };
+          transferAssetContract.parameter.value.asset_name = '1005119';
+
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue([
+            trc10TransferWithDecimalTokenId,
+          ]);
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+          mockTronHttpClient.getTRC10TokenMetadata.mockResolvedValue({
+            name: 'BestAdsCoin',
+            symbol: 'TRC20AdsCOM',
+            decimals: 3,
+          });
+          // Token has price data — should not be filtered as spam
+          mockPriceApiClient.getMultipleSpotPrices.mockResolvedValue({
+            [`${Network.Mainnet}/trc10:1005119`]: {
+              id: '1005119',
+              price: 0.001,
+            },
+          } as never);
+
+          const transactions =
+            await transactionsService.fetchNewTransactionsForAccount(
+              Network.Mainnet,
+              mockAccount2,
+            );
+
+          expect(mockTronHttpClient.getTRC10TokenMetadata).toHaveBeenCalledWith(
+            '1005119',
+            Network.Mainnet,
+          );
+          expect(transactions).toHaveLength(1);
+        },
+      );
+    });
+
+    it('falls back to defaults when TRC10 metadata fetch fails', async () => {
+      await withTransactionService(
+        async ({
+          mockTrongridApiClient,
+          mockTronHttpClient,
+          mockPriceApiClient,
+          transactionsService,
+        }) => {
+          // Setup mock responses with simplified single-transaction structure
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue([
+            trc10TransferMock,
+          ] as TransactionInfo[]);
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+          // Mock TRC10 token metadata to fail
+          mockTronHttpClient.getTRC10TokenMetadata.mockRejectedValue(
+            new Error('Token not found'),
+          );
+          // Token has price data — should not be filtered as spam despite metadata failure
+          mockPriceApiClient.getMultipleSpotPrices.mockResolvedValue({
+            [`${Network.Mainnet}/trc10:1005119`]: {
+              id: '1005119',
+              price: 0.001,
+            },
+          } as never);
+
+          const transactions =
+            await transactionsService.fetchNewTransactionsForAccount(
+              Network.Mainnet,
+              mockAccount2,
+            );
+
+          // Verify TRC10 token metadata fetch was attempted
+          expect(mockTronHttpClient.getTRC10TokenMetadata).toHaveBeenCalledWith(
+            '1005119',
+            Network.Mainnet,
+          );
+
+          // Verify the amount falls back to default 6 decimals and symbol to UNKNOWN
+          // Raw amount is 88888888, with 6 decimals: 88888888 / 10^6 = 88.888888
+          expect(transactions).toHaveLength(1);
+          const fromAsset = transactions[0]!.from[0]!.asset as {
+            amount: string;
+            unit: string;
+          };
+          const toAsset = transactions[0]!.to[0]!.asset as {
+            amount: string;
+            unit: string;
+          };
+          expect(fromAsset.amount).toBe('88.888888');
+          expect(fromAsset.unit).toBe('UNKNOWN');
+          expect(toAsset.amount).toBe('88.888888');
+          expect(toAsset.unit).toBe('UNKNOWN');
+        },
+      );
+    });
+
+    it('should handle network parameter correctly for different networks', async () => {
+      await withTransactionService(
+        async ({ mockTrongridApiClient, transactionsService }) => {
+          // Setup mock responses
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+
+          await transactionsService.fetchNewTransactionsForAccount(
+            Network.Shasta,
+            mockAccount,
+          );
+
+          // Verify API calls were made with correct network
+          expect(
+            mockTrongridApiClient.getTransactionInfoByAddress,
+          ).toHaveBeenCalledWith(Network.Shasta, mockAccount.address);
+          expect(
+            mockTrongridApiClient.getContractTransactionInfoByAddress,
+          ).toHaveBeenCalledWith(Network.Shasta, mockAccount.address);
+        },
+      );
+    });
+
+    it('should handle empty responses from API', async () => {
+      await withTransactionService(
+        async ({ mockTrongridApiClient, transactionsService }) => {
+          // Setup empty mock responses
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+
+          const result =
+            await transactionsService.fetchNewTransactionsForAccount(
+              Network.Mainnet,
+              mockAccount,
+            );
+
+          expect(result).toStrictEqual([]);
+        },
+      );
+    });
+
+    it('should handle API errors gracefully', async () => {
+      await withTransactionService(
+        async ({ mockTrongridApiClient, transactionsService }) => {
+          // Setup API to throw error
+          const apiError = new Error('API request failed');
+          mockTrongridApiClient.getTransactionInfoByAddress.mockRejectedValue(
+            apiError,
+          );
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockRejectedValue(
+            apiError,
+          );
+
+          const result =
+            await transactionsService.fetchNewTransactionsForAccount(
+              Network.Mainnet,
+              mockAccount,
+            );
+
+          expect(result).toStrictEqual([]);
+          expect(mockLogger.error).toHaveBeenCalledWith(
+            '[🧾 TransactionsService]',
+            'Failed to fetch raw transactions for address TGJn1wnUYHJbvN88cynZbsAz2EMeZq73yx on network tron:728126428',
+          );
+          expect(mockLogger.error).toHaveBeenCalledWith(
+            '[🧾 TransactionsService]',
+            'Failed to fetch TRC20 transactions for address TGJn1wnUYHJbvN88cynZbsAz2EMeZq73yx on network tron:728126428',
+          );
+        },
+      );
+    });
+
+    it('skips already confirmed transactions but allows pending transactions to be updated', async () => {
+      await withTransactionService(
+        async ({
+          mockTrongridApiClient,
+          mockTransactionsRepository,
+          transactionsService,
+        }) => {
+          // Simulate a confirmed transaction ID that should be skipped
+          const confirmedTxId = 'confirmed-tx-id';
+          mockTransactionsRepository.getConfirmedTransactionIds.mockResolvedValue(
+            new Set([confirmedTxId]),
+          );
+
+          // API returns both the confirmed tx and a new tx
+          const confirmedTx = {
+            ...nativeTransferMock,
+            txID: confirmedTxId,
+          };
+          const newTx = {
+            ...nativeTransferMock,
+            txID: 'new-tx-id',
+          };
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue([
+            confirmedTx,
+            newTx,
+          ] as TransactionInfo[]);
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+
+          const result =
+            await transactionsService.fetchNewTransactionsForAccount(
+              Network.Mainnet,
+              mockAccount,
+            );
+
+          // Should only return the new transaction, not the confirmed one
+          expect(result).toHaveLength(1);
+          expect(result[0]!.id).toBe('new-tx-id');
+        },
+      );
+    });
+
+    it('re-fetches pending transactions so they can be updated to confirmed status', async () => {
+      await withTransactionService(
+        async ({
+          mockTrongridApiClient,
+          mockTransactionsRepository,
+          transactionsService,
+        }) => {
+          // Simulate a pending transaction that exists in state but is NOT in confirmed set
+          const pendingTxId = nativeTransferMock.txID;
+          mockTransactionsRepository.getConfirmedTransactionIds.mockResolvedValue(
+            new Set(), // Pending tx ID is not in confirmed set
+          );
+
+          // API returns the same transaction (now confirmed on network)
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue([
+            nativeTransferMock,
+          ] as TransactionInfo[]);
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+
+          const result =
+            await transactionsService.fetchNewTransactionsForAccount(
+              Network.Mainnet,
+              mockAccount,
+            );
+
+          // The pending transaction should be returned so it can be updated
+          expect(result).toHaveLength(1);
+          expect(result[0]!.id).toBe(pendingTxId);
+        },
+      );
+    });
+
+    describe('filters unpriced received token transactions as spam', () => {
+      const trc10Asset = (
+        amount: string,
+      ): Transaction['to'][number]['asset'] => ({
+        type: `${Network.Mainnet}/trc10:1005074`,
+        amount,
+        unit: 'GasFree4uCOM',
+        fungible: true,
+      });
+
+      const trc20Asset = (
+        amount: string,
+      ): Transaction['to'][number]['asset'] => ({
+        type: `${Network.Mainnet}/trc20:TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`,
+        amount,
+        unit: 'USDT',
+        fungible: true,
+      });
+
+      const nativeAsset = (
+        amount: string,
+      ): Transaction['to'][number]['asset'] => ({
+        type: Networks[Network.Mainnet].nativeToken.id,
+        amount,
+        unit: Networks[Network.Mainnet].nativeToken.symbol,
+        fungible: true,
+      });
+
+      const receiveTransaction = (
+        id: string,
+        asset: Transaction['to'][number]['asset'],
+        accountAddress = mockAccount.address,
+      ): Transaction => ({
+        id,
+        type: TransactionType.Receive,
+        account: mockAccount.id,
+        chain: Network.Mainnet,
+        status: TransactionStatus.Confirmed,
+        timestamp: 1,
+        from: [{ address: 'sender-address', asset }],
+        to: [{ address: accountAddress, asset }],
+        events: [],
+        fees: [],
+      });
+
+      it('filters received TRC10 tokens with no price data', async () => {
+        await withTransactionService(
+          async ({
+            mockPriceApiClient,
+            mockTrongridApiClient,
+            transactionsService,
+          }) => {
+            mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue(
+              [nativeTransferMock] as TransactionInfo[],
+            );
+            mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+              [],
+            );
+
+            const spamTx = receiveTransaction(
+              'spam-trc10',
+              trc10Asset('2.2222'),
+            );
+            const mapSpy = jest
+              .spyOn(TransactionMapper, 'mapTransactions')
+              .mockReturnValue([spamTx]);
+            mockPriceApiClient.getMultipleSpotPrices.mockResolvedValue({});
+
+            try {
+              const result =
+                await transactionsService.fetchNewTransactionsForAccount(
+                  Network.Mainnet,
+                  mockAccount,
+                );
+              expect(result).toHaveLength(0);
+            } finally {
+              mapSpy.mockRestore();
+            }
+          },
+        );
+      });
+
+      it('filters received TRC20 tokens with no price data', async () => {
+        await withTransactionService(
+          async ({
+            mockPriceApiClient,
+            mockTrongridApiClient,
+            transactionsService,
+          }) => {
+            mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue(
+              [nativeTransferMock] as TransactionInfo[],
+            );
+            mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+              [],
+            );
+
+            const spamTx = receiveTransaction(
+              'spam-trc20',
+              trc20Asset('4444.4444'),
+            );
+            const mapSpy = jest
+              .spyOn(TransactionMapper, 'mapTransactions')
+              .mockReturnValue([spamTx]);
+            mockPriceApiClient.getMultipleSpotPrices.mockResolvedValue({});
+
+            try {
+              const result =
+                await transactionsService.fetchNewTransactionsForAccount(
+                  Network.Mainnet,
+                  mockAccount,
+                );
+              expect(result).toHaveLength(0);
+            } finally {
+              mapSpy.mockRestore();
+            }
+          },
+        );
+      });
+
+      it('keeps received tokens that have price data', async () => {
+        await withTransactionService(
+          async ({
+            mockPriceApiClient,
+            mockTrongridApiClient,
+            transactionsService,
+          }) => {
+            mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue(
+              [nativeTransferMock] as TransactionInfo[],
+            );
+            mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+              [],
+            );
+
+            const legitimateTx = receiveTransaction(
+              'legit-usdt',
+              trc20Asset('10'),
+            );
+            const mapSpy = jest
+              .spyOn(TransactionMapper, 'mapTransactions')
+              .mockReturnValue([legitimateTx]);
+            mockPriceApiClient.getMultipleSpotPrices.mockResolvedValue({
+              [`${Network.Mainnet}/trc20:TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`]: {
+                id: 'tether',
+                price: 1.0,
+              },
+            } as never);
+
+            try {
+              const result =
+                await transactionsService.fetchNewTransactionsForAccount(
+                  Network.Mainnet,
+                  mockAccount,
+                );
+              expect(result).toHaveLength(1);
+              expect(result[0]!.id).toBe('legit-usdt');
+            } finally {
+              mapSpy.mockRestore();
+            }
+          },
+        );
+      });
+
+      it('always keeps received native TRX transactions regardless of price', async () => {
+        await withTransactionService(
+          async ({
+            mockPriceApiClient,
+            mockTrongridApiClient,
+            transactionsService,
+          }) => {
+            mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue(
+              [nativeTransferMock] as TransactionInfo[],
+            );
+            mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+              [],
+            );
+
+            const nativeTx = receiveTransaction(
+              'native-trx',
+              nativeAsset('10'),
+            );
+            const mapSpy = jest
+              .spyOn(TransactionMapper, 'mapTransactions')
+              .mockReturnValue([nativeTx]);
+            // No price API call expected for native TRX — getMultipleSpotPrices default returns {}
+
+            try {
+              const result =
+                await transactionsService.fetchNewTransactionsForAccount(
+                  Network.Mainnet,
+                  mockAccount,
+                );
+              expect(result).toHaveLength(1);
+              expect(
+                mockPriceApiClient.getMultipleSpotPrices,
+              ).not.toHaveBeenCalled();
+            } finally {
+              mapSpy.mockRestore();
+            }
+          },
+        );
+      });
+
+      it('always keeps non-receive transactions regardless of price', async () => {
+        await withTransactionService(
+          async ({
+            mockPriceApiClient,
+            mockTrongridApiClient,
+            transactionsService,
+          }) => {
+            mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue(
+              [nativeTransferMock] as TransactionInfo[],
+            );
+            mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+              [],
+            );
+
+            const sendTx: Transaction = {
+              id: 'send-trc20',
+              type: TransactionType.Send,
+              account: mockAccount.id,
+              chain: Network.Mainnet,
+              status: TransactionStatus.Confirmed,
+              timestamp: 1,
+              from: [{ address: mockAccount.address, asset: trc20Asset('10') }],
+              to: [{ address: 'recipient', asset: trc20Asset('10') }],
+              events: [],
+              fees: [],
+            };
+            const mapSpy = jest
+              .spyOn(TransactionMapper, 'mapTransactions')
+              .mockReturnValue([sendTx]);
+            // No price API call expected — getMultipleSpotPrices default returns {}
+
+            try {
+              const result =
+                await transactionsService.fetchNewTransactionsForAccount(
+                  Network.Mainnet,
+                  mockAccount,
+                );
+              expect(result).toHaveLength(1);
+              expect(
+                mockPriceApiClient.getMultipleSpotPrices,
+              ).not.toHaveBeenCalled();
+            } finally {
+              mapSpy.mockRestore();
+            }
+          },
+        );
+      });
+
+      it('keeps all transactions when the price API call fails', async () => {
+        await withTransactionService(
+          async ({
+            mockPriceApiClient,
+            mockTrongridApiClient,
+            mockSnapClient,
+            transactionsService,
+          }) => {
+            mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue(
+              [nativeTransferMock] as TransactionInfo[],
+            );
+            mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+              [],
+            );
+
+            const spamTx = receiveTransaction(
+              'spam-trc10',
+              trc10Asset('2.2222'),
+            );
+            const mapSpy = jest
+              .spyOn(TransactionMapper, 'mapTransactions')
+              .mockReturnValue([spamTx]);
+            mockPriceApiClient.getMultipleSpotPrices.mockRejectedValue(
+              new Error('Price API unavailable'),
+            );
+
+            try {
+              const result =
+                await transactionsService.fetchNewTransactionsForAccount(
+                  Network.Mainnet,
+                  mockAccount,
+                );
+              expect(result).toHaveLength(1);
+              expect(mockLogger.warn).toHaveBeenCalledWith(
+                '[🧾 TransactionsService]',
+                expect.objectContaining({ error: expect.any(Error) }),
+                'Failed to fetch spot prices for spam filtering, keeping all transactions',
+              );
+              expect(mockSnapClient.trackError).toHaveBeenCalledWith(
+                expect.any(Error),
+              );
+            } finally {
+              mapSpy.mockRestore();
+            }
+          },
+        );
+      });
+    });
+  });
+
+  describe('findByAccounts', () => {
+    it('should find transactions for multiple accounts', async () => {
+      await withTransactionService(
+        async ({ mockTransactionsRepository, transactionsService }) => {
+          const mockTransactions1: Transaction[] = [
+            {
+              id: 'tx1',
+              type: 'send',
+              account: mockAccount.id,
+              chain: Network.Mainnet,
+              status: 'confirmed',
+              timestamp: Math.floor(Date.now() / 1000),
+              from: [
+                {
+                  address: mockAccount.address,
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '100',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              to: [
+                {
+                  address: 'other-address',
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '100',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              events: [],
+              fees: [],
+            },
+          ];
+
+          const mockTransactions2: Transaction[] = [
+            {
+              id: 'tx2',
+              type: 'receive',
+              account: mockAccount2.id,
+              chain: Network.Mainnet,
+              status: 'confirmed',
+              timestamp: Math.floor(Date.now() / 1000),
+              from: [
+                {
+                  address: 'other-address',
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '50',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              to: [
+                {
+                  address: mockAccount2.address,
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '50',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              events: [],
+              fees: [],
+            },
+          ];
+
+          mockTransactionsRepository.findByAccountId
+            .mockResolvedValueOnce(mockTransactions1)
+            .mockResolvedValueOnce(mockTransactions2);
+
+          const result = await transactionsService.findByAccounts([
+            mockAccount,
+            mockAccount2,
+          ]);
+
+          expect(
+            mockTransactionsRepository.findByAccountId,
+          ).toHaveBeenCalledTimes(2);
+          expect(
+            mockTransactionsRepository.findByAccountId,
+          ).toHaveBeenCalledWith(mockAccount.id);
+          expect(
+            mockTransactionsRepository.findByAccountId,
+          ).toHaveBeenCalledWith(mockAccount2.id);
+          expect(result).toHaveLength(2);
+        },
+      );
+    });
+
+    it('should handle empty accounts array', async () => {
+      await withTransactionService(
+        async ({ mockTransactionsRepository, transactionsService }) => {
+          const result = await transactionsService.findByAccounts([]);
+
+          expect(result).toStrictEqual([]);
+          expect(
+            mockTransactionsRepository.findByAccountId,
+          ).not.toHaveBeenCalled();
+        },
+      );
+    });
+  });
+
+  describe('save', () => {
+    it('should save a single transaction', async () => {
+      await withTransactionService(
+        async ({ mockTransactionsRepository, transactionsService }) => {
+          const mockTransaction: Transaction = {
+            id: 'tx-save-test',
+            type: 'send',
+            account: mockAccount.id,
+            chain: Network.Mainnet,
+            status: 'confirmed',
+            timestamp: Math.floor(Date.now() / 1000),
+            from: [
+              {
+                address: mockAccount.address,
+                asset: {
+                  type: KnownCaip19Id.TrxMainnet,
+                  amount: '100',
+                  unit: 'TRX',
+                  fungible: true,
+                },
+              },
+            ],
+            to: [
+              {
+                address: 'other-address',
+                asset: {
+                  type: KnownCaip19Id.TrxMainnet,
+                  amount: '100',
+                  unit: 'TRX',
+                  fungible: true,
+                },
+              },
+            ],
+            events: [],
+            fees: [],
+          };
+
+          await transactionsService.save(mockTransaction);
+
+          expect(mockTransactionsRepository.saveMany).toHaveBeenCalledWith([
+            mockTransaction,
+          ]);
+        },
+      );
+    });
+  });
+
+  describe('saveMany', () => {
+    it('should save multiple transactions and emit keyring event', async () => {
+      await withTransactionService(
+        async ({ mockTransactionsRepository, transactionsService }) => {
+          const mockTransactions: Transaction[] = [
+            {
+              id: 'tx-bulk-1',
+              type: 'send',
+              account: mockAccount.id,
+              chain: Network.Mainnet,
+              status: 'confirmed',
+              timestamp: Math.floor(Date.now() / 1000),
+              from: [
+                {
+                  address: mockAccount.address,
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '100',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              to: [
+                {
+                  address: 'other-address',
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '100',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              events: [],
+              fees: [],
+            },
+            {
+              id: 'tx-bulk-2',
+              type: 'receive',
+              account: mockAccount.id,
+              chain: Network.Mainnet,
+              status: 'confirmed',
+              timestamp: Math.floor(Date.now() / 1000),
+              from: [
+                {
+                  address: 'other-address',
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '50',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              to: [
+                {
+                  address: mockAccount.address,
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '50',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              events: [],
+              fees: [],
+            },
+          ];
+
+          await transactionsService.saveMany(mockTransactions);
+
+          expect(mockTransactionsRepository.saveMany).toHaveBeenCalledWith(
+            mockTransactions,
+          );
+        },
+      );
+    });
+
+    it('should handle empty transactions array', async () => {
+      await withTransactionService(
+        async ({ mockTransactionsRepository, transactionsService }) => {
+          await transactionsService.saveMany([]);
+
+          expect(mockTransactionsRepository.saveMany).toHaveBeenCalledWith([]);
+        },
+      );
+    });
+
+    it('should group transactions by account ID correctly', async () => {
+      await withTransactionService(
+        async ({ mockTransactionsRepository, transactionsService }) => {
+          const mockTransactions: Transaction[] = [
+            {
+              id: 'tx-account1-1',
+              type: 'send',
+              account: mockAccount.id,
+              chain: Network.Mainnet,
+              status: 'confirmed',
+              timestamp: Math.floor(Date.now() / 1000),
+              from: [
+                {
+                  address: mockAccount.address,
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '100',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              to: [
+                {
+                  address: 'other-address',
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '100',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              events: [],
+              fees: [],
+            },
+            {
+              id: 'tx-account1-2',
+              type: 'receive',
+              account: mockAccount.id,
+              chain: Network.Mainnet,
+              status: 'confirmed',
+              timestamp: Math.floor(Date.now() / 1000),
+              from: [
+                {
+                  address: 'other-address',
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '25',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              to: [
+                {
+                  address: mockAccount.address,
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '25',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              events: [],
+              fees: [],
+            },
+            {
+              id: 'tx-account2-1',
+              type: 'send',
+              account: mockAccount2.id,
+              chain: Network.Mainnet,
+              status: 'confirmed',
+              timestamp: Math.floor(Date.now() / 1000),
+              from: [
+                {
+                  address: mockAccount2.address,
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '75',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              to: [
+                {
+                  address: 'other-address',
+                  asset: {
+                    type: KnownCaip19Id.TrxMainnet,
+                    amount: '75',
+                    unit: 'TRX',
+                    fungible: true,
+                  },
+                },
+              ],
+              events: [],
+              fees: [],
+            },
+          ];
+
+          await transactionsService.saveMany(mockTransactions);
+
+          expect(mockTransactionsRepository.saveMany).toHaveBeenCalledWith(
+            mockTransactions,
+          );
+        },
+      );
+    });
+  });
+
+  describe('Integration scenarios', () => {
+    it('should handle a complete flow: fetch, process, and save transactions', async () => {
+      await withTransactionService(
+        async ({
+          mockTransactionsRepository,
+          mockTrongridApiClient,
+          transactionsService,
+        }) => {
+          // Setup API responses with simplified single-transaction structure
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue([
+            nativeTransferMock,
+          ] as TransactionInfo[]);
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+            contractInfoMock.data.slice(0, 1) as ContractTransactionInfo[],
+          );
+
+          // Fetch transactions
+          const fetchedTransactions =
+            await transactionsService.fetchNewTransactionsForAccount(
+              Network.Mainnet,
+              mockAccount,
+            );
+
+          // Save the fetched transactions
+          await transactionsService.saveMany(fetchedTransactions);
+
+          expect(mockTransactionsRepository.saveMany).toHaveBeenCalledWith(
+            fetchedTransactions,
+          );
+        },
+      );
+    });
+
+    it('should handle mixed transaction types from different mock data sources', async () => {
+      await withTransactionService(
+        async ({
+          mockPriceApiClient,
+          mockTrongridApiClient,
+          mockTronHttpClient,
+          transactionsService,
+        }) => {
+          // Mix different types of transactions with simplified structure
+          const mixedRawTransactions = [
+            nativeTransferMock, // Native TRX transfer
+            trc10TransferMock, // TRC10 transfer
+            trc20TransferMock, // TRC20 transfer
+          ] as TransactionInfo[];
+
+          mockTrongridApiClient.getTransactionInfoByAddress.mockResolvedValue(
+            mixedRawTransactions,
+          );
+          mockTrongridApiClient.getContractTransactionInfoByAddress.mockResolvedValue(
+            [],
+          );
+
+          const result =
+            await transactionsService.fetchNewTransactionsForAccount(
+              Network.Mainnet,
+              mockAccount2,
+            );
+
+          expect(
+            mockTrongridApiClient.getTransactionInfoByAddress,
+          ).toHaveBeenCalledWith(Network.Mainnet, mockAccount2.address);
+          expect(
+            mockTrongridApiClient.getContractTransactionInfoByAddress,
+          ).toHaveBeenCalledWith(Network.Mainnet, mockAccount2.address);
+          expect(mockTronHttpClient.getTRC10TokenMetadata).toHaveBeenCalledWith(
+            '1005119',
+            Network.Mainnet,
+          );
+          expect(
+            mockPriceApiClient.getMultipleSpotPrices,
+          ).not.toHaveBeenCalled();
+
+          expect(result).toStrictEqual([
+            expect.objectContaining({
+              id: nativeTransferMock.txID,
+              account: mockAccount2.id,
+              chain: Network.Mainnet,
+              status: TransactionStatus.Confirmed,
+              type: TransactionType.Unknown,
+              from: [
+                expect.objectContaining({
+                  asset: expect.objectContaining({
+                    amount: '0.01',
+                    type: KnownCaip19Id.TrxMainnet,
+                    unit: 'TRX',
+                  }),
+                }),
+              ],
+              to: [
+                expect.objectContaining({
+                  address: 'TEFik7dGm6r5Y1Af9mGwnELuJLa1jXDDUB',
+                  asset: expect.objectContaining({
+                    amount: '0.01',
+                    type: KnownCaip19Id.TrxMainnet,
+                    unit: 'TRX',
+                  }),
+                }),
+              ],
+            }),
+            expect.objectContaining({
+              id: trc10TransferMock.txID,
+              account: mockAccount2.id,
+              chain: Network.Mainnet,
+              status: TransactionStatus.Confirmed,
+              type: TransactionType.Unknown,
+              from: [
+                expect.objectContaining({
+                  asset: expect.objectContaining({
+                    amount: '88.888888',
+                    type: `${Network.Mainnet}/trc10:1005119`,
+                    unit: 'UNKNOWN',
+                  }),
+                }),
+              ],
+            }),
+          ]);
+        },
+      );
+    });
+  });
+});

@@ -1,0 +1,216 @@
+name: Main
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ !contains(github.ref, 'refs/heads/main') }}
+
+jobs:
+  check-skip-merge-queue:
+    name: Check if pull request can skip merge queue
+    runs-on: ubuntu-latest
+    outputs:
+      skip-merge-queue: ${{ steps.check-skip-merge-queue.outputs.up-to-date }}
+    steps:
+      - name: Check pull request merge queue status
+        id: check-skip-merge-queue
+        if: github.event_name == 'merge_group'
+        uses: MetaMask/github-tools/.github/actions/check-skip-merge-queue@v1
+
+  check-workflows:
+    name: Check workflows
+    needs:
+      - check-skip-merge-queue
+    if: github.event_name != 'merge_group' || needs.check-skip-merge-queue.outputs.skip-merge-queue != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download actionlint
+        id: download-actionlint
+        run: bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash) 1.7.12
+        shell: bash
+      - name: Check workflow files
+        run: ${{ steps.download-actionlint.outputs.executable }} -color
+        shell: bash
+
+  analyse-code:
+    name: Analyse code
+    needs: check-workflows
+    uses: MetaMask/action-security-code-scanner/.github/workflows/security-scan.yml@v2
+    with:
+      scanner-ref: v2
+      paths-ignored: |
+        .storybook/
+        **/__snapshots__/
+        **/*.snap
+        **/*.stories.js
+        **/*.stories.tsx
+        **/*.test.browser.ts*
+        **/*.test.js*
+        **/*.test.ts*
+        **/fixtures/
+        **/jest.config.js
+        **/jest.environment.js
+        **/mocks/
+        **/test*/
+        docs/
+        e2e/
+        merged-packages/
+        node_modules/
+        storybook/
+        test*/
+    secrets:
+      project-metrics-token: ${{ secrets.SECURITY_SCAN_METRICS_TOKEN }}
+      slack-webhook: ${{ secrets.APPSEC_BOT_SLACK_WEBHOOK }}
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+  lint-build-test:
+    name: Lint, build, and test
+    needs: check-workflows
+    uses: ./.github/workflows/lint-build-test.yml
+    secrets:
+      RPC_URL_LIST_MAINNET: ${{ secrets.RPC_URL_LIST_MAINNET }}
+      TRONGRID_BASE_URL_MAINNET: ${{ secrets.TRONGRID_BASE_URL_MAINNET }}
+      TRON_HTTP_BASE_URL_MAINNET: ${{ secrets.TRON_HTTP_BASE_URL_MAINNET }}
+      RPC_URL_MAINNET_LIST: ${{ secrets.RPC_URL_MAINNET_LIST }}
+      RPC_URL_DEVNET_LIST: ${{ secrets.RPC_URL_DEVNET_LIST }}
+      RPC_WEB_SOCKET_URL_MAINNET: ${{ secrets.RPC_WEB_SOCKET_URL_MAINNET }}
+      RPC_WEB_SOCKET_URL_DEVNET: ${{ secrets.RPC_WEB_SOCKET_URL_DEVNET }}
+      LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
+      DEFAULT_ADDRESS_TYPE: ${{ secrets.DEFAULT_ADDRESS_TYPE }}
+      ESPLORA_BITCOIN: ${{ secrets.ESPLORA_BITCOIN }}
+      ESPLORA_TESTNET: ${{ secrets.ESPLORA_TESTNET }}
+      ESPLORA_TESTNET4: ${{ secrets.ESPLORA_TESTNET4 }}
+      ESPLORA_SIGNET: ${{ secrets.ESPLORA_SIGNET }}
+      ESPLORA_REGTEST: ${{ secrets.ESPLORA_REGTEST }}
+      PRICE_API_URL: ${{ secrets.PRICE_API_URL }}
+      STELLAR_RPC_URL_MAINNET: ${{ secrets.STELLAR_RPC_URL_MAINNET }}
+      STELLAR_HORIZON_URL_MAINNET: ${{ secrets.STELLAR_HORIZON_URL_MAINNET }}
+      STELLAR_RPC_URL_TESTNET: ${{ secrets.STELLAR_RPC_URL_TESTNET }}
+      STELLAR_HORIZON_URL_TESTNET: ${{ secrets.STELLAR_HORIZON_URL_TESTNET }}
+
+  check-release:
+    name: Check release
+    needs: check-workflows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      IS_RELEASE_PR: ${{ steps.check-release.outputs.IS_RELEASE_PR }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Check release
+        id: check-release
+        if: github.event_name != 'push'
+        uses: ./.github/actions/check-release
+        with:
+          commit-starts-with: ${{ vars.RELEASE_COMMIT_PREFIX }}
+
+  require-correct-shasum:
+    name: Require correct shasum
+    needs:
+      - check-release
+      - lint-build-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        if: needs.check-release.outputs.IS_RELEASE_PR == 'true'
+        uses: actions/checkout@v7
+      - name: Restore build artifacts
+        if: needs.check-release.outputs.IS_RELEASE_PR == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: package-dist-${{ github.sha }}
+          path: packages
+      - name: Require clean working directory
+        if: needs.check-release.outputs.IS_RELEASE_PR == 'true'
+        uses: ./.github/actions/require-clean-working-directory
+        with:
+          skip-shasum-diff: false
+
+  is-release:
+    name: Determine whether this is a release merge commit
+    needs: lint-build-test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      IS_RELEASE: ${{ steps.is-release.outputs.IS_RELEASE }}
+    steps:
+      - id: is-release
+        uses: MetaMask/action-is-release@v2
+        with:
+          commit-starts-with: ${{ vars.RELEASE_COMMIT_PREFIX }}
+
+  publish-release:
+    name: Publish release
+    needs: is-release
+    if: needs.is-release.outputs.IS_RELEASE == 'true'
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/publish-release.yml
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
+      DEFAULT_ADDRESS_TYPE: ${{ secrets.DEFAULT_ADDRESS_TYPE }}
+      ESPLORA_BITCOIN: ${{ secrets.ESPLORA_BITCOIN }}
+      ESPLORA_TESTNET: ${{ secrets.ESPLORA_TESTNET }}
+      ESPLORA_TESTNET4: ${{ secrets.ESPLORA_TESTNET4 }}
+      ESPLORA_SIGNET: ${{ secrets.ESPLORA_SIGNET }}
+      ESPLORA_REGTEST: ${{ secrets.ESPLORA_REGTEST }}
+      PRICE_API_URL: ${{ secrets.PRICE_API_URL }}
+      RPC_URL_LIST_MAINNET: ${{ secrets.RPC_URL_LIST_MAINNET }}
+      TRONGRID_BASE_URL_MAINNET: ${{ secrets.TRONGRID_BASE_URL_MAINNET }}
+      TRON_HTTP_BASE_URL_MAINNET: ${{ secrets.TRON_HTTP_BASE_URL_MAINNET }}
+      RPC_URL_MAINNET_LIST: ${{ secrets.RPC_URL_MAINNET_LIST }}
+      RPC_URL_DEVNET_LIST: ${{ secrets.RPC_URL_DEVNET_LIST }}
+      RPC_WEB_SOCKET_URL_MAINNET: ${{ secrets.RPC_WEB_SOCKET_URL_MAINNET }}
+      RPC_WEB_SOCKET_URL_DEVNET: ${{ secrets.RPC_WEB_SOCKET_URL_DEVNET }}
+      STELLAR_RPC_URL_MAINNET: ${{ secrets.STELLAR_RPC_URL_MAINNET }}
+      STELLAR_HORIZON_URL_MAINNET: ${{ secrets.STELLAR_HORIZON_URL_MAINNET }}
+      STELLAR_RPC_URL_TESTNET: ${{ secrets.STELLAR_RPC_URL_TESTNET }}
+      STELLAR_HORIZON_URL_TESTNET: ${{ secrets.STELLAR_HORIZON_URL_TESTNET }}
+
+  all-jobs-complete:
+    name: All jobs complete
+    runs-on: ubuntu-latest
+    needs:
+      - analyse-code
+      - check-release
+      - lint-build-test
+      - require-correct-shasum
+    outputs:
+      passed: ${{ steps.set-output.outputs.passed }}
+    steps:
+      - name: Set passed output
+        id: set-output
+        run: echo "passed=true" >> "$GITHUB_OUTPUT"
+
+  all-jobs-pass:
+    name: All jobs pass
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    needs:
+      - all-jobs-complete
+      - check-skip-merge-queue
+    env:
+      PASSED: ${{ needs.all-jobs-complete.outputs.passed == 'true' || needs.check-skip-merge-queue.outputs.skip-merge-queue == 'true' }}
+    steps:
+      - name: Check that all jobs have passed
+        run: |
+          if [[ "$PASSED" != "true" ]]; then
+            exit 1
+          fi

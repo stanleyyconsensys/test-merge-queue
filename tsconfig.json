@@ -1,0 +1,33 @@
+{
+  /**
+   * This configuration is used by the `lint` script in `package.json`, and by editors such as
+   * VSCode for TypeScript-related features.
+   */
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "references": [
+    {
+      "path": "./packages/bitcoin-wallet-snap"
+    },
+    {
+      "path": "./packages/sample-snap"
+    },
+    {
+      "path": "./packages/snap-networks-utils"
+    },
+    {
+      "path": "./packages/solana-wallet-snap"
+    },
+    {
+      "path": "./packages/stellar-wallet-snap"
+    },
+    {
+      "path": "./packages/tron-wallet-snap"
+    }
+  ],
+  "files": [],
+  "include": ["./docs", "./tests", "./scripts"]
+}

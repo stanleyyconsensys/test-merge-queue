@@ -1,0 +1,230 @@
+name: Lint, Build, and Test
+
+on:
+  workflow_call:
+    secrets:
+      RPC_URL_LIST_MAINNET:
+        required: false
+      TRONGRID_BASE_URL_MAINNET:
+        required: false
+      TRON_HTTP_BASE_URL_MAINNET:
+        required: false
+      RPC_URL_MAINNET_LIST:
+        required: false
+      RPC_URL_DEVNET_LIST:
+        required: false
+      RPC_WEB_SOCKET_URL_MAINNET:
+        required: false
+      RPC_WEB_SOCKET_URL_DEVNET:
+        required: false
+      LOG_LEVEL:
+        required: false
+      DEFAULT_ADDRESS_TYPE:
+        required: false
+      ESPLORA_BITCOIN:
+        required: false
+      ESPLORA_TESTNET:
+        required: false
+      ESPLORA_TESTNET4:
+        required: false
+      ESPLORA_SIGNET:
+        required: false
+      ESPLORA_REGTEST:
+        required: false
+      PRICE_API_URL:
+        required: false
+      STELLAR_RPC_URL_MAINNET:
+        required: false
+      STELLAR_HORIZON_URL_MAINNET:
+        required: false
+      STELLAR_RPC_URL_TESTNET:
+        required: false
+      STELLAR_HORIZON_URL_TESTNET:
+
+env:
+  LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
+  DEFAULT_ADDRESS_TYPE: ${{ secrets.DEFAULT_ADDRESS_TYPE }}
+  ESPLORA_BITCOIN: ${{ secrets.ESPLORA_BITCOIN }}
+  ESPLORA_TESTNET: ${{ secrets.ESPLORA_TESTNET }}
+  ESPLORA_TESTNET4: ${{ secrets.ESPLORA_TESTNET4 }}
+  ESPLORA_SIGNET: ${{ secrets.ESPLORA_SIGNET }}
+  ESPLORA_REGTEST: ${{ secrets.ESPLORA_REGTEST }}
+  PRICE_API_URL: ${{ secrets.PRICE_API_URL }}
+  ENVIRONMENT: production
+  RPC_URL_LIST_MAINNET: ${{ secrets.RPC_URL_LIST_MAINNET }}
+  RPC_URL_LIST_NILE_TESTNET: ${{ vars.RPC_URL_LIST_NILE_TESTNET }}
+  RPC_URL_LIST_SHASTA_TESTNET: ${{ vars.RPC_URL_LIST_SHASTA_TESTNET }}
+  PRICE_API_BASE_URL: ${{ vars.PRICE_API_BASE_URL }}
+  LOCAL_API_BASE_URL: ${{ vars.LOCAL_API_BASE_URL }}
+  TOKEN_API_BASE_URL: ${{ vars.TOKEN_API_BASE_URL }}
+  STATIC_API_BASE_URL: ${{ vars.STATIC_API_BASE_URL }}
+  SECURITY_ALERTS_API_BASE_URL: ${{ vars.SECURITY_ALERTS_API_BASE_URL }}
+  NFT_API_BASE_URL: ${{ vars.NFT_API_BASE_URL }}
+  EXPLORER_MAINNET_BASE_URL: ${{ vars.EXPLORER_MAINNET_BASE_URL }}
+  EXPLORER_NILE_BASE_URL: ${{ vars.EXPLORER_NILE_BASE_URL }}
+  EXPLORER_SHASTA_BASE_URL: ${{ vars.EXPLORER_SHASTA_BASE_URL }}
+  TRONGRID_BASE_URL_MAINNET: ${{ secrets.TRONGRID_BASE_URL_MAINNET }}
+  TRONGRID_BASE_URL_NILE: ${{ vars.TRONGRID_BASE_URL_NILE }}
+  TRONGRID_BASE_URL_SHASTA: ${{ vars.TRONGRID_BASE_URL_SHASTA }}
+  TRON_HTTP_BASE_URL_MAINNET: ${{ secrets.TRON_HTTP_BASE_URL_MAINNET }}
+  TRON_HTTP_BASE_URL_NILE: ${{ vars.TRON_HTTP_BASE_URL_NILE }}
+  TRON_HTTP_BASE_URL_SHASTA: ${{ vars.TRON_HTTP_BASE_URL_SHASTA }}
+  RPC_URL_MAINNET_LIST: ${{ secrets.RPC_URL_MAINNET_LIST }}
+  RPC_URL_DEVNET_LIST: ${{ secrets.RPC_URL_DEVNET_LIST }}
+  RPC_URL_TESTNET_LIST: ${{ vars.RPC_URL_TESTNET_LIST }}
+  RPC_URL_LOCALNET_LIST: ${{ vars.RPC_URL_LOCALNET_LIST }}
+  RPC_WEB_SOCKET_URL_MAINNET: ${{ secrets.RPC_WEB_SOCKET_URL_MAINNET }}
+  RPC_WEB_SOCKET_URL_DEVNET: ${{ secrets.RPC_WEB_SOCKET_URL_DEVNET }}
+  RPC_WEB_SOCKET_URL_TESTNET: ${{ vars.RPC_WEB_SOCKET_URL_TESTNET }}
+  RPC_WEB_SOCKET_URL_LOCALNET: ${{ vars.RPC_WEB_SOCKET_URL_LOCALNET }}
+  EXPLORER_BASE_URL: ${{ vars.EXPLORER_BASE_URL }}
+  STELLAR_RPC_URL_MAINNET: ${{ secrets.STELLAR_RPC_URL_MAINNET }}
+  STELLAR_HORIZON_URL_MAINNET: ${{ secrets.STELLAR_HORIZON_URL_MAINNET }}
+  STELLAR_RPC_URL_TESTNET: ${{ secrets.STELLAR_RPC_URL_TESTNET }}
+  STELLAR_HORIZON_URL_TESTNET: ${{ secrets.STELLAR_HORIZON_URL_TESTNET }}
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x, 24.x]
+    outputs:
+      child-workspace-package-names: ${{ steps.workspace-package-names.outputs.child-workspace-package-names }}
+    steps:
+      - name: Checkout and setup environment
+        uses: MetaMask/action-checkout-and-setup@v3
+        with:
+          is-high-risk-environment: false
+          cache-node-modules: true
+          force-setup: true
+          node-version: ${{ matrix.node-version }}
+      - name: Fetch workspace package names
+        id: workspace-package-names
+        run: |
+          echo "child-workspace-package-names=$(yarn workspaces list --no-private --json | jq --slurp --raw-output 'map(.name) | @json')" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+  lint:
+    name: Lint (${{ matrix.script }})
+    runs-on: ubuntu-latest
+    needs: prepare
+    strategy:
+      matrix:
+        node-version: [24.x]
+        script:
+          - lint:eslint
+          - lint:misc:check
+          - constraints
+          - lint:dependencies
+          - readme-content:check
+    steps:
+      - name: Checkout and setup environment
+        uses: MetaMask/action-checkout-and-setup@v3
+        with:
+          is-high-risk-environment: false
+          node-version: ${{ matrix.node-version }}
+      - name: Run yarn ${{ matrix.script }}
+        run: yarn "$SCRIPT"
+        env:
+          SCRIPT: ${{ matrix.script }}
+      - name: Require clean working directory
+        uses: ./.github/actions/require-clean-working-directory
+
+  validate-changelog:
+    name: Validate changelog
+    runs-on: ubuntu-latest
+    needs: prepare
+    strategy:
+      matrix:
+        node-version: [24.x]
+        package-name: ${{ fromJson(needs.prepare.outputs.child-workspace-package-names) }}
+    steps:
+      - name: Checkout and setup environment
+        uses: MetaMask/action-checkout-and-setup@v3
+        with:
+          is-high-risk-environment: false
+          node-version: ${{ matrix.node-version }}
+      - run: yarn workspace ${{ matrix.package-name }} changelog:validate
+      - name: Require clean working directory
+        uses: ./.github/actions/require-clean-working-directory
+
+  validate-changelog-diffs:
+    name: Validate changelog diffs
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Validate changelog diffs
+        uses: ./.github/actions/check-merge-queue-changelogs
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: prepare
+    strategy:
+      matrix:
+        node-version: [24.x]
+    steps:
+      - name: Checkout and setup environment
+        uses: MetaMask/action-checkout-and-setup@v3
+        with:
+          is-high-risk-environment: false
+          node-version: ${{ matrix.node-version }}
+      - run: yarn build
+      - name: Require clean working directory
+        uses: ./.github/actions/require-clean-working-directory
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-dist-${{ github.sha }}
+          # Glob discards the path before the first wildcard (`packages/`), so
+          # the artifact root is `<package>/dist/...`. Download into `packages/`
+          # to restore `packages/<package>/dist/...`. Include post-build
+          # manifests so require-correct-shasum can run a strict dirty check.
+          path: |
+            packages/*/dist
+            packages/*/snap.manifest.json
+          retention-days: 1
+
+  test-scripts:
+    name: Test Scripts
+    runs-on: ubuntu-latest
+    needs: prepare
+    strategy:
+      matrix:
+        node-version: [24.x]
+    steps:
+      - name: Checkout and setup environment
+        uses: MetaMask/action-checkout-and-setup@v3
+        with:
+          is-high-risk-environment: false
+          node-version: ${{ matrix.node-version }}
+      - run: yarn test:scripts
+      - name: Require clean working directory
+        uses: ./.github/actions/require-clean-working-directory
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+        package-name: ${{ fromJson(needs.prepare.outputs.child-workspace-package-names) }}
+    steps:
+      - name: Checkout and setup environment
+        uses: MetaMask/action-checkout-and-setup@v3
+        with:
+          is-high-risk-environment: false
+          node-version: ${{ matrix.node-version }}
+      - name: Restore build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: package-dist-${{ github.sha }}
+          path: packages
+      - run: yarn workspace ${{ matrix.package-name }} run test
+      - name: Require clean working directory
+        uses: ./.github/actions/require-clean-working-directory

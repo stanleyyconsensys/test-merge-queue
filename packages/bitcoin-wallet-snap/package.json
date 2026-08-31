@@ -1,0 +1,80 @@
+{
+  "name": "@metamask/bitcoin-wallet-snap",
+  "version": "2.0.1",
+  "description": "A Bitcoin wallet Snap",
+  "keywords": [
+    "Ethereum",
+    "MetaMask"
+  ],
+  "homepage": "https://github.com/MetaMask/internal-snaps/tree/main/packages/bitcoin-wallet-snap#readme",
+  "bugs": {
+    "url": "https://github.com/MetaMask/internal-snaps/issues"
+  },
+  "license": "(MIT OR Apache-2.0)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MetaMask/internal-snaps.git"
+  },
+  "files": [
+    "dist/",
+    "images/",
+    "snap.manifest.json",
+    "locales/"
+  ],
+  "main": "./dist/bundle.js",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "allow-scripts": "yarn workspace root allow-scripts",
+    "build": "mm-snap build && yarn build:locale && yarn build-preinstalled-snap",
+    "build-preinstalled-snap": "node scripts/build-preinstalled-snap.js",
+    "build:clean": "yarn clean && yarn build:locale && yarn build",
+    "build:locale": "node ./scripts/populate-en-locale.js && oxfmt 'locales/**/*.json'",
+    "build:locale:watch": "npx nodemon --watch messages.json --exec \"node ./scripts/populate-en-locale.js && oxfmt 'locales/**/*.json'\"",
+    "changelog:update": "../../scripts/update-changelog.sh @metamask/bitcoin-wallet-snap",
+    "changelog:validate": "../../scripts/validate-changelog.sh @metamask/bitcoin-wallet-snap",
+    "since-latest-release": "../../scripts/since-latest-release.sh",
+    "clean": "rimraf dist",
+    "publish:preview": "yarn npm publish --tag preview",
+    "prepublishOnly": "mm-snap manifest",
+    "serve": "mm-snap serve",
+    "start": "concurrently \"mm-snap watch\" \"yarn build:locale:watch\"",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --reporters=jest-silent-reporter",
+    "test:integration": "./integration-test/run-integration.sh",
+    "test:clean": "NODE_OPTIONS=--experimental-vm-modules jest --clearCache",
+    "test:verbose": "NODE_OPTIONS=--experimental-vm-modules jest --verbose",
+    "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watch"
+  },
+  "devDependencies": {
+    "@jest/globals": "^29.5.0",
+    "@metamask/auto-changelog": "^6.1.1",
+    "@metamask/bitcoindevkit": "^0.1.13",
+    "@metamask/key-tree": "^10.1.1",
+    "@metamask/keyring-api": "^23.7.0",
+    "@metamask/keyring-snap-sdk": "^9.2.1",
+    "@metamask/slip44": "^4.2.0",
+    "@metamask/snap-networks-utils": "^1.0.0",
+    "@metamask/snaps-cli": "^8.4.1",
+    "@metamask/snaps-jest": "^10.2.0",
+    "@metamask/snaps-sdk": "^11.2.0",
+    "@metamask/superstruct": "^3.4.1",
+    "@metamask/utils": "^11.11.0",
+    "bip322-js": "^3.0.0",
+    "concurrently": "^10.0.3",
+    "dotenv": "^17.2.1",
+    "jest": "30.0.3",
+    "jest-mock-extended": "^4.0.0",
+    "jest-transform-stub": "2.0.0",
+    "oxfmt": "^0.45.0",
+    "superstruct": "^2.0.2",
+    "ts-jest": "^29.4.1",
+    "typescript": "~5.8.3",
+    "uuid": "^14.0.0",
+    "wif": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

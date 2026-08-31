@@ -1,0 +1,18 @@
+{
+  /**
+   * This configuration is extended by the `tsconfig.json` configuration in each package.
+   */
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    /**
+     * Here we ensure that TypeScript resolves `@metamask/*` imports to the
+     * uncompiled source code for packages that live in this repo.
+     *
+     * NOTE: This must be synchronized with the `moduleNameMapper` option in
+     * `jest.config.packages.js`.
+     */
+    "paths": {
+      "@metamask/*": ["../*/src"]
+    }
+  }
+}

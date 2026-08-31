@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.packages.json",
+  "compilerOptions": {
+    "baseUrl": "./",
+    "lib": ["ES2021", "DOM"],
+    "resolveJsonModule": true /*  lets us import JSON modules from within TypeScript modules. */,
+    "jsx": "react-jsx",
+    "jsxImportSource": "@metamask/snaps-sdk",
+    "exactOptionalPropertyTypes": false,
+    "forceConsistentCasingInFileNames": true,
+    "noErrorTruncation": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["jest"]
+  },
+  "references": [{ "path": "../snap-networks-utils" }],
+  "include": ["**/*.ts", "**/*.tsx", "locales/*.json"]
+}
